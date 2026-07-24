@@ -1,0 +1,23 @@
+{
+  "name": "sig-taproot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Bitcoin taproot wallet deterministically derived from an EVM wallet signature (client-side demo)",
+  "scripts": {
+    "bundle": "esbuild src/app.js --bundle --format=esm --outfile=dist/app.bundle.js",
+    "test": "node --test",
+    "serve": "python -m http.server 8000"
+  },
+  "dependencies": {
+    "@noble/hashes": "2.2.0",
+    "@scure/base": "2.2.0",
+    "@scure/bip32": "2.2.0",
+    "@scure/bip39": "2.2.0",
+    "@scure/btc-signer": "2.2.0",
+    "viem": "2.55.8"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.1"
+  }
+}

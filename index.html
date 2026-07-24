@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>sig-taproot — EVM signature → Bitcoin taproot wallet</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --fg: #1a1a1a;
+        --muted: #666;
+        --bg: #fafafa;
+        --card: #fff;
+        --border: #ddd;
+        --accent: #7b2ff7;
+        --ok: #0a7d33;
+        --err: #c0271a;
+        --code-bg: #f3f3f5;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --fg: #e8e8e8;
+          --muted: #9a9a9a;
+          --bg: #16161a;
+          --card: #1e1e24;
+          --border: #33333c;
+          --accent: #b98cff;
+          --ok: #4ec472;
+          --err: #ff6b5e;
+          --code-bg: #26262e;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        font: 15px/1.55 system-ui, sans-serif;
+        color: var(--fg);
+        background: var(--bg);
+        margin: 0;
+        padding: 2rem 1rem;
+        display: flex;
+        justify-content: center;
+      }
+      main { width: 100%; max-width: 640px; }
+      h1 { font-size: 1.4rem; margin: 0 0 0.25rem; }
+      .sub { color: var(--muted); margin: 0 0 1.5rem; }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 1.25rem;
+        margin-bottom: 1rem;
+      }
+      button {
+        font: inherit;
+        font-weight: 600;
+        color: #fff;
+        background: var(--accent);
+        border: 0;
+        border-radius: 8px;
+        padding: 0.6rem 1rem;
+        cursor: pointer;
+      }
+      button.ghost {
+        color: var(--accent);
+        background: transparent;
+        border: 1px solid var(--accent);
+        font-weight: 500;
+        padding: 0.35rem 0.7rem;
+      }
+      button:disabled { opacity: 0.5; cursor: default; }
+      .status { margin: 1rem 0 0; min-height: 1.4em; font-size: 0.92rem; }
+      .status--info { color: var(--muted); }
+      .status--ok { color: var(--ok); }
+      .status--error { color: var(--err); }
+      .row { margin-bottom: 0.9rem; }
+      .label { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin-bottom: 0.2rem; }
+      code, .mono {
+        font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+        background: var(--code-bg);
+        border-radius: 5px;
+        padding: 0.15rem 0.4rem;
+        word-break: break-all;
+        font-size: 0.9rem;
+      }
+      .block { display: block; padding: 0.5rem 0.6rem; }
+      .hidden { display: none; }
+      .ok { color: var(--ok); }
+      .error { color: var(--err); }
+      .inline-actions { margin-top: 0.35rem; display: flex; gap: 0.5rem; }
+      .warn {
+        border-left: 3px solid var(--accent);
+        padding: 0.5rem 0.9rem;
+        color: var(--muted);
+        font-size: 0.86rem;
+      }
+      .warn strong { color: var(--fg); }
+      a { color: var(--accent); }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>sig-taproot</h1>
+      <p class="sub">
+        Derive a Bitcoin taproot wallet (<code>bc1p…</code>) deterministically from an EVM
+        wallet signature — entirely in your browser.
+      </p>
+
+      <div class="card">
+        <button id="connect">Connect wallet &amp; derive</button>
+        <button id="signAgain" class="ghost hidden">Sign again to verify</button>
+        <div id="status" class="status status--info">
+          Click connect, then approve one signature in your wallet to derive your address.
+        </div>
+      </div>
+
+      <div id="result" class="card hidden">
+        <div class="row">
+          <div class="label">EVM account (signer)</div>
+          <code id="evmAccount" class="block"></code>
+        </div>
+        <div class="row">
+          <div class="label">Bitcoin taproot address</div>
+          <code id="btcAddress" class="block"></code>
+          <div class="inline-actions">
+            <button id="copyAddress" class="ghost">Copy address</button>
+          </div>
+        </div>
+        <div class="row">
+          <div class="label">Derivation path (BIP-86)</div>
+          <code id="derivPath" class="block"></code>
+        </div>
+        <div class="row">
+          <div class="label">x-only public key</div>
+          <code id="xonly" class="block"></code>
+        </div>
+        <div class="row">
+          <div class="label">Recovery mnemonic (BIP-39, 24 words)</div>
+          <code id="mnemonic" class="block hidden"></code>
+          <div class="inline-actions">
+            <button id="revealMnemonic" class="ghost">Reveal mnemonic</button>
+            <button id="copyMnemonic" class="ghost">Copy mnemonic</button>
+          </div>
+        </div>
+        <div id="determinism" class="mono" style="background: none; padding: 0"></div>
+      </div>
+
+      <div class="card warn">
+        <strong>Cross-check in Sparrow:</strong> import the 24-word mnemonic as a new wallet,
+        script type <em>Taproot (P2TR)</em>, derivation <code>m/86'/0'/0'</code>. Receive
+        address index&nbsp;0 must equal the <code>bc1p…</code> above.
+      </div>
+
+      <div class="card warn">
+        <strong>Hot wallet — demo tier only.</strong> The derived key lives in this page's
+        JavaScript (XSS = theft). Signing this exact message on a hostile site hands over the
+        wallet — the readable message text is the only phishing defense. Back up the mnemonic:
+        it is the escape hatch if this app or your wallet's signing behavior ever changes.
+      </div>
+    </main>
+
+    <script type="module" src="dist/app.bundle.js"></script>
+  </body>
+</html>
