@@ -11,6 +11,7 @@
 import { keccak256, hashTypedData, getAddress } from 'viem';
 import { deriveTaproot, taprootAddressAt, CONTEXT } from './derive.js';
 import { buildSpend } from './btc.js';
+import { commitAddress, buildReveal, estimateReveal } from './inscription.js';
 import { getUtxos, getFeeRates, broadcast, txUrl } from './mempool.js';
 
 // EIP-712 payload the user signs. The `context` string is the phishing defense:
@@ -180,6 +181,9 @@ function render(account, wallet) {
   $('connect').textContent = 'Reconnect / re-derive';
   $('wallet').classList.remove('hidden');
   renderAddresses();
+  $('inscriptions').classList.remove('hidden');
+  populateInscribeIndex();
+  renderInscriptions();
 }
 
 // Re-sign once and re-derive; assert the address matches — the live proof.
@@ -325,8 +329,8 @@ function renderUtxos() {
 }
 
 // Fill the fee-rate <select> with the three mempool presets (no arbitrary rate).
-function feeRateOptions() {
-  const sel = $('feeRate');
+function feeRateOptions(selId = 'feeRate') {
+  const sel = $(selId);
   sel.innerHTML = '';
   const presets = feeRates
     ? [
@@ -426,10 +430,210 @@ function resetWallet() {
   utxos = [];
   selectedUtxo = null;
   builtSpend = null;
+  selectedReveal = null;
+  builtReveal = null;
   $('result').classList.add('hidden');
   $('signAgain').classList.add('hidden');
   $('wallet').classList.add('hidden');
   $('spendPanel').classList.add('hidden');
+  $('inscriptions').classList.add('hidden');
+  $('revealPanel').classList.add('hidden');
+}
+
+// --- Inscriptions: commit/reveal arbitrary data (mainnet) ------------------
+
+let selectedReveal = null; // { entry, utxo }
+let builtReveal = null;
+
+const INSCR_KEY = () => `sig-taproot:inscriptions:${state?.account ?? 'none'}`;
+const loadInscriptions = () => {
+  try {
+    return JSON.parse(localStorage.getItem(INSCR_KEY())) || [];
+  } catch {
+    return [];
+  }
+};
+const saveInscriptions = (list) => localStorage.setItem(INSCR_KEY(), JSON.stringify(list));
+const ownerAt = (index) => {
+  const a = taprootAddressAt(state.mnemonic, index);
+  return { xonlyHex: a.xonlyHex, privateKey: a.privateKey };
+};
+
+// Populate the "owner index" select for new inscriptions from the address list.
+function populateInscribeIndex() {
+  const sel = $('inscribeIndex');
+  sel.innerHTML = '';
+  for (const a of addresses) {
+    const o = document.createElement('option');
+    o.value = String(a.index);
+    o.textContent = `#${a.index}`;
+    sel.appendChild(o);
+  }
+}
+
+async function createInscription() {
+  try {
+    const data = $('inscribeData').value;
+    if (!data) {
+      setInscribeHint('Enter some data to inscribe.', 'error');
+      return;
+    }
+    const ownerIndex = Number($('inscribeIndex').value) || 0;
+    const owner = ownerAt(ownerIndex);
+    const addr = commitAddress(owner.xonlyHex, data);
+    const list = loadInscriptions();
+    list.unshift({ id: `${Date.now()}-${ownerIndex}`, data, ownerIndex, commitAddress: addr });
+    saveInscriptions(list);
+    // Funding hint from a current fee rate.
+    feeRates = await getFeeRates().catch(() => feeRates);
+    const rate = feeRates?.halfHourFee ?? 5;
+    const est = estimateReveal({ owner, data, feeRate: rate });
+    setInscribeHint(
+      `Saved. Send funds to the commit address below, then Scan. Reveal will cost ≈ ` +
+        `${fmtSats(est.fee)} at ${rate} sat/vB (${est.vsize} vB) — fund at least that plus your output.`,
+      'ok',
+    );
+    $('inscribeData').value = '';
+    renderInscriptions();
+  } catch (err) {
+    reportError(err);
+    setInscribeHint(err?.message || String(err), 'error');
+  }
+}
+
+function setInscribeHint(msg, kind = 'info') {
+  const el = $('inscribeHint');
+  el.textContent = msg;
+  el.className = `status status--${kind}`;
+}
+
+function renderInscriptions() {
+  const list = loadInscriptions();
+  const box = $('inscriptionList');
+  box.innerHTML = '';
+  if (!list.length) {
+    box.innerHTML = '<div class="wl-conf">No inscriptions yet.</div>';
+    return;
+  }
+  for (const entry of list) {
+    const wrap = document.createElement('div');
+    wrap.className = 'card';
+    wrap.style.margin = '0.6rem 0';
+    const preview = entry.data.length > 60 ? entry.data.slice(0, 60) + '…' : entry.data;
+    wrap.innerHTML =
+      `<div class="wl-conf">#${entry.ownerIndex} · ${entry.data.length} bytes</div>` +
+      `<div class="mono" style="background:none;padding:0.2rem 0;white-space:pre-wrap;word-break:break-word">${escapeHtml(preview)}</div>` +
+      `<div class="label">Commit address (fund this)</div><code class="block">${entry.commitAddress}</code>`;
+    const actions = document.createElement('div');
+    actions.className = 'inline-actions';
+    const copy = mkButton('Copy address', 'ghost', () => copyText(entry.commitAddress, copy));
+    const scan = mkButton('Scan', '', () => scanInscription(entry, utxoBox));
+    const del = mkButton('Delete', 'ghost', () => {
+      saveInscriptions(loadInscriptions().filter((e) => e.id !== entry.id));
+      renderInscriptions();
+    });
+    actions.append(copy, scan, del);
+    const utxoBox = document.createElement('div');
+    wrap.append(actions, utxoBox);
+    box.appendChild(wrap);
+  }
+}
+
+async function scanInscription(entry, utxoBox) {
+  try {
+    utxoBox.textContent = 'Scanning…';
+    feeRates = await getFeeRates().catch(() => feeRates);
+    const found = await getUtxos(entry.commitAddress);
+    utxoBox.innerHTML = '';
+    if (!found.length) {
+      utxoBox.innerHTML = '<div class="wl-conf">No UTXOs yet — fund the commit address and Scan again.</div>';
+      return;
+    }
+    for (const u of found) {
+      const row = document.createElement('div');
+      row.className = 'wl-row';
+      row.innerHTML =
+        `<code class="wl-addr">${short(u.txid)}:${u.vout}</code>` +
+        `<span>${fmtBtc(u.value)}</span>` +
+        `<span class="wl-conf">${u.status?.confirmed ? 'confirmed' : 'pending'}</span>`;
+      row.appendChild(mkButton('Reveal', '', () => openReveal(entry, { txid: u.txid, vout: u.vout, value: BigInt(u.value) })));
+      utxoBox.appendChild(row);
+    }
+  } catch (err) {
+    utxoBox.textContent = err?.message || String(err);
+  }
+}
+
+function openReveal(entry, utxo) {
+  selectedReveal = { entry, utxo };
+  builtReveal = null;
+  feeRateOptions('revealFeeRate');
+  $('revealInfo').textContent = `#${entry.ownerIndex} · ${short(utxo.txid)}:${utxo.vout} · ${fmtBtc(utxo.value)} · ${entry.data.length} bytes`;
+  $('revealDest').value = '';
+  $('revealPreview').textContent = '';
+  $('revealPreview').className = '';
+  $('confirmReveal').classList.add('hidden');
+  $('revealResult').textContent = '';
+  $('revealResult').className = '';
+  $('revealPanel').classList.remove('hidden');
+  $('revealPanel').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function previewReveal() {
+  try {
+    if (!selectedReveal) return;
+    const destination = $('revealDest').value.trim();
+    const feeRate = Number($('revealFeeRate').value);
+    const { entry, utxo } = selectedReveal;
+    builtReveal = buildReveal({ utxo, owner: ownerAt(entry.ownerIndex), data: entry.data, destination, feeRate });
+    $('revealPreview').innerHTML =
+      `Reveal ${entry.data.length} bytes; send <b>${fmtBtc(builtReveal.outputAmount)}</b> → <code>${destination}</code><br>` +
+      `from ${fmtBtc(utxo.value)}, fee <b>${fmtSats(builtReveal.fee)}</b> @ ${feeRate} sat/vB (${builtReveal.vsize} vB)`;
+    $('revealPreview').className = 'ok';
+    $('confirmReveal').classList.remove('hidden');
+  } catch (err) {
+    builtReveal = null;
+    $('confirmReveal').classList.add('hidden');
+    $('revealPreview').textContent = err?.message || String(err);
+    $('revealPreview').className = 'error';
+  }
+}
+
+async function confirmReveal() {
+  if (!builtReveal || !selectedReveal) return;
+  const destination = $('revealDest').value.trim();
+  const ok = window.confirm(
+    'BROADCAST a REAL mainnet inscription (reveal)?\n\n' +
+      `Reveal ${selectedReveal.entry.data.length} bytes and send ${fmtBtc(builtReveal.outputAmount)} to:\n${destination}\n\n` +
+      `Fee: ${fmtSats(builtReveal.fee)}. This is irreversible.`,
+  );
+  if (!ok) return;
+  try {
+    $('confirmReveal').disabled = true;
+    $('revealResult').textContent = 'Broadcasting…';
+    $('revealResult').className = 'status status--info';
+    const txid = await broadcast(builtReveal.txHex);
+    $('revealResult').innerHTML = `✓ Inscribed. txid: <a href="${txUrl(txid)}" target="_blank" rel="noopener">${txid}</a>`;
+    $('revealResult').className = 'ok';
+    $('confirmReveal').classList.add('hidden');
+  } catch (err) {
+    $('revealResult').textContent = err?.message || String(err);
+    $('revealResult').className = 'error';
+  } finally {
+    $('confirmReveal').disabled = false;
+  }
+}
+
+function mkButton(text, cls, onClick) {
+  const b = document.createElement('button');
+  if (cls) b.className = cls;
+  b.textContent = text;
+  b.addEventListener('click', onClick);
+  return b;
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 }
 
 // --- Wire up ---------------------------------------------------------------
@@ -443,6 +647,9 @@ $('refreshAddresses').addEventListener('click', renderAddresses);
 $('scanUtxos').addEventListener('click', scanUtxos);
 $('previewSpend').addEventListener('click', previewSpend);
 $('confirmSpend').addEventListener('click', confirmSpend);
+$('createInscription').addEventListener('click', createInscription);
+$('previewReveal').addEventListener('click', previewReveal);
+$('confirmReveal').addEventListener('click', confirmReveal);
 
 // Re-derivation is required if the user switches accounts in the wallet.
 globalThis.ethereum?.on?.('accountsChanged', () => {

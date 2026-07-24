@@ -200,6 +200,47 @@
         </div>
       </div>
 
+      <div id="inscriptions" class="card hidden">
+        <div class="banner-danger">
+          <strong>Inscriptions — mainnet, real funds.</strong> Data is embedded on-chain in the
+          reveal transaction. Recovery needs the data + this wallet: if you clear this browser,
+          re-enter the <em>same</em> data with the same wallet/index to reconstruct the address.
+        </div>
+
+        <div class="subhead">Create inscription</div>
+        <div class="field">
+          <div class="label">Data to inscribe</div>
+          <textarea id="inscribeData" rows="3" style="width: 100%; font: inherit; color: var(--fg); background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 0.5rem 0.6rem" placeholder="free-form text…"></textarea>
+        </div>
+        <div class="field">
+          Owner address index <select id="inscribeIndex"></select>
+          <button id="createInscription">Create inscription address</button>
+        </div>
+        <div id="inscribeHint" class="status status--info"></div>
+
+        <div class="subhead">Your inscriptions</div>
+        <div id="inscriptionList"></div>
+
+        <div id="revealPanel" class="hidden">
+          <div class="subhead">Reveal &amp; spend (full, no change)</div>
+          <div class="field">Revealing: <code id="revealInfo"></code></div>
+          <div class="field">
+            <div class="label">Destination address (mainnet)</div>
+            <input id="revealDest" type="text" placeholder="bc1… / 3… / 1…" autocomplete="off" spellcheck="false" />
+          </div>
+          <div class="field">
+            <div class="label">Fee rate</div>
+            <select id="revealFeeRate"></select>
+          </div>
+          <div class="inline-actions">
+            <button id="previewReveal">Preview</button>
+            <button id="confirmReveal" class="hidden">Confirm &amp; broadcast</button>
+          </div>
+          <div id="revealPreview" class="mono" style="background: none; padding: 0.4rem 0"></div>
+          <div id="revealResult" class="mono" style="background: none; padding: 0.4rem 0"></div>
+        </div>
+      </div>
+
       <div class="card warn">
         <strong>Cross-check in Sparrow:</strong> import the 24-word mnemonic as a new wallet,
         script type <em>Taproot (P2TR)</em>, derivation <code>m/86'/0'/0'</code>. Receive
