@@ -4,12 +4,13 @@ Derive a Bitcoin **taproot** wallet (`bc1p…`) deterministically from an **EVM 
 signature**, entirely client-side, and spend from it. Connect MetaMask (or any EOA web3
 wallet) → sign a fixed EIP-712 message → the page turns that signature into a BIP-39 mnemonic
 and BIP-86 taproot addresses. The same wallet always reproduces the same Bitcoin address;
-nobody else can. You can then receive to any address index and **fully spend a UTXO** on
-**mainnet** to any destination.
+nobody else can. You can then receive to any address index, **fully spend a UTXO** on
+**mainnet**, and **inscribe arbitrary data** on-chain (commit/reveal).
 
-> **Scope:** derive → verify determinism → receive → spend. A **per-UTXO** wallet: pick a
-> receive address by index, fund it, then fully spend a resulting UTXO (one input → one
-> output, no change, no coin selection) to any destination. Bitcoin data + broadcast via
+> **Scope:** derive → verify determinism → receive → spend → inscribe. A **per-UTXO** wallet:
+> pick a receive address by index, fund it, then fully spend a resulting UTXO (one input → one
+> output, no change, no coin selection). Inscriptions use a custom taproot envelope
+> (commit/reveal), spent the same one-in/one-out way. Bitcoin data + broadcast via
 > [mempool.space](https://mempool.space); **mainnet only**.
 
 ## How it works
@@ -65,6 +66,23 @@ After deriving, the wallet panel appears:
 The derived private key signs the taproot key-path spend **in-page** (BIP-340 Schnorr, via
 `@scure/btc-signer`) — the EVM wallet only bootstrapped the key and is not involved in spending.
 
+### Inscribe data (mainnet)
+
+The Inscriptions panel embeds arbitrary data on-chain via a custom taproot envelope
+(commit/reveal — the Ordinals pattern, but our own envelope, **not** ord-compatible):
+
+1. Enter data + pick an owner address index → **Create inscription address**. The leaf script is
+   `<pubkey> OP_CHECKSIG OP_FALSE OP_IF [marker] <data chunks ≤520B> OP_ENDIF`; the commit
+   address is a P2TR with a **NUMS** internal key, so it's spendable only by revealing. It's
+   saved to localStorage (scoped to the connected EVM account) with a reveal-fee estimate.
+2. Send funds to the commit address, then **Scan** it.
+3. **Reveal & spend** the UTXO to a destination — the reveal transaction carries the data in its
+   witness (one input → one output, no change). Preview → `confirm()` → broadcast → txid.
+
+Envelope codec: `src/inscription.js` (a btc-signer `CustomScript` modeled on micro-ordinals'
+`OutOrdinalReveal`, minus the ord tag/CBOR system). All taproot crypto (tweak, control block,
+sighash, Schnorr) is `@scure/btc-signer`.
+
 ### Requires a plain EOA (not a smart-account wallet)
 
 The signature must be deterministic ECDSA (RFC 6979), which only an **externally-owned
@@ -97,12 +115,15 @@ xvfb-run -a -s "-screen 0 1600x1000x24" \
 
 - **Unit** — the pure, DOM-free modules are node-testable without a wallet or network:
   `src/derive.js` (pinned derivation vector), `src/btc.js` (spend build: fee/dust/validation,
-  deterministic with a fixed aux), `src/mempool.js` (client parsing, stubbed `fetch`).
+  deterministic with a fixed aux), `src/mempool.js` (client parsing, stubbed `fetch`),
+  `src/inscription.js` (pinned commit address; reveal build; **witness round-trip** — decode the
+  reveal tx and assert the embedded data equals the input).
 - **`test:e2e` (Tier 1, gates CI)** — Playwright drives the built page in headless Chromium
   against an injected provider that signs with a real key (viem). `injected-wallet.spec.ts`
   pins the derived `bc1p…` and verifies determinism; `spend.spec.ts` stubs mempool.space
-  (`page.route`) and drives scan → Spend → broadcast, decoding the posted tx to assert it's the
-  expected 1-in/1-out taproot spend. Deterministic; no real network or funds.
+  (`page.route`) and drives scan → Spend → broadcast; `inscribe.spec.ts` creates an inscription,
+  checks it persists across a reload, then scans → reveals → asserts the broadcast reveal tx's
+  witness carries the data. Each decodes the posted tx to check it. No real network or funds.
 - **`test:e2e:ambire` (Tier 2, non-gating in CI)** — the real Ambire extension via a small
   harness (`tests/e2e/ambire-harness.ts`, copied/trimmed from `../browser-web3-signer`). Boots
   a baked EOA fixture, approves the connect + sign popups, and asserts the one-sign-then-verify
@@ -120,6 +141,9 @@ xvfb-run -a -s "-screen 0 1600x1000x24" \
 - **Real mainnet spend (manual, real funds):** send a **tiny** amount to a derived address →
   Scan → Spend that UTXO to another address you control → confirm the txid on mempool.space.
   This is the only step that touches real money and can't be automated; do it once with dust.
+- **Real mainnet inscription (manual):** enter data → Create → fund the commit address with a
+  tiny amount → Scan → Reveal to an address you control → confirm the reveal tx on
+  mempool.space (its witness shows the envelope + data).
 
 ## Security model
 
@@ -139,6 +163,11 @@ xvfb-run -a -s "-screen 0 1600x1000x24" \
   destination. Guardrails: only the three mempool fee presets (no arbitrary rate), dust floor,
   `fee < value` check, mainnet-only destination validation, and a two-step preview →
   `confirm()` naming the amount + destination before broadcast. Still: verify the destination.
+- **Inscriptions carry the same real-funds risk, plus a recovery caveat.** The commit address
+  uses a NUMS internal key, so it's spendable **only** by revealing — which needs the data + this
+  wallet. If localStorage is cleared, re-enter the *same* data with the same wallet/index to
+  reconstruct the address and reveal. Large data ⇒ large reveal fee; oversized/non-standard txs
+  may be rejected by mempool.space.
 
 ## Layout
 
@@ -146,11 +175,12 @@ xvfb-run -a -s "-screen 0 1600x1000x24" \
 index.html            UI shell; loads dist/app.bundle.js as a module
 src/derive.js         pure derivation pipeline (no DOM): mnemonic + address-by-index
 src/btc.js            pure single-UTXO taproot spend builder (no DOM)
+src/inscription.js    pure inscription commit/reveal (custom taproot envelope, no DOM)
 src/mempool.js        mempool.space REST client (utxos, fees, broadcast)
-src/app.js            wallet connect, derive, verify, addresses/UTXOs/spend UI
+src/app.js            wallet connect, derive, verify, addresses/UTXOs/spend/inscribe UI
 dist/app.bundle.js    esbuild output (vendored)
-test/*.test.js        node --test: derive vector, spend build, mempool client
-tests/e2e/            Playwright: injected-wallet, spend (stubbed), ambire (real)
+test/*.test.js        node --test: derive vector, spend build, inscription, mempool client
+tests/e2e/            Playwright: injected-wallet, spend, inscribe (stubbed), ambire (real)
 PLAN.md               original research/design notes
 ```
 

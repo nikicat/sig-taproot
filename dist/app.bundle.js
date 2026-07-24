@@ -7322,12 +7322,12 @@ var Bitset = /* @__PURE__ */ Object.freeze({
     if (pos > bsLen - len)
       throw new Error(`wrong range=${pos}/${len} of ${bsLen}`);
   },
-  set: (bs, chunk, value, allowRewrite = true) => {
-    if (!isNum(chunk) || chunk < 0 || chunk >= bs.length)
+  set: (bs, chunk2, value, allowRewrite = true) => {
+    if (!isNum(chunk2) || chunk2 < 0 || chunk2 >= bs.length)
       return false;
-    if (!allowRewrite && (bs[chunk] & value) !== 0)
+    if (!allowRewrite && (bs[chunk2] & value) !== 0)
       return false;
-    bs[chunk] |= value;
+    bs[chunk2] |= value;
     return true;
   },
   pos: (pos, i) => ({
@@ -7376,7 +7376,7 @@ var Bitset = /* @__PURE__ */ Object.freeze({
     const first = pos % BITS ? Math.floor(pos / BITS) : void 0;
     const lastPos = pos + len;
     const last = lastPos % BITS ? Math.floor(lastPos / BITS) : void 0;
-    const canSet = (chunk, value) => chunk >= 0 && chunk < bs.length && (bs[chunk] & value) === 0;
+    const canSet = (chunk2, value) => chunk2 >= 0 && chunk2 < bs.length && (bs[chunk2] & value) === 0;
     if (!allowRewrite) {
       if (first !== void 0 && first === last) {
         if (!canSet(first, FULL_MASK >>> BITS - len << BITS - len - pos))
@@ -11085,6 +11085,103 @@ function buildSpend({ utxo, owner, destination, feeRate, auxRand } = {}) {
   };
 }
 
+// src/inscription.js
+var MAX_PUSH = 520;
+var MARKER = utf8ToBytes2("sig");
+var eqBytes = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+var toBytes3 = (data) => typeof data === "string" ? utf8ToBytes2(data) : data;
+function chunk(data) {
+  const out = [];
+  for (let i = 0; i < data.length; i += MAX_PUSH) out.push(data.subarray(i, i + MAX_PUSH));
+  return out;
+}
+var OutInscription = Object.freeze({
+  encode(from) {
+    try {
+      const pubkey = from[0];
+      if (!(pubkey instanceof Uint8Array) || pubkey.length !== 32) return;
+      if (from[1] !== "CHECKSIG" || from[from.length - 1] !== "ENDIF") return;
+      const ifIdx = from.indexOf("IF");
+      if (ifIdx < 0) return;
+      let i = ifIdx + 1;
+      if (MARKER.length && from[i] instanceof Uint8Array && eqBytes(from[i], MARKER)) i++;
+      const pushes = [];
+      for (; i < from.length - 1; i++) {
+        if (!(from[i] instanceof Uint8Array)) return;
+        pushes.push(from[i]);
+      }
+      return { type: "tr_inscription", pubkey, data: concatBytes2(...pushes) };
+    } catch {
+      return;
+    }
+  },
+  decode(to) {
+    if (to.type !== "tr_inscription") return;
+    const out = [to.pubkey, "CHECKSIG", 0, "IF"];
+    if (MARKER.length) out.push(MARKER);
+    for (const c of chunk(to.data)) out.push(c);
+    out.push("ENDIF");
+    return out;
+  },
+  finalizeTaproot(script, parsed, signatures) {
+    const [{ pubKey }, sig] = signatures[0];
+    if (!eqBytes(pubKey, parsed.pubkey)) return;
+    return [sig, script];
+  }
+});
+function commitPayment(xonlyHex, data) {
+  const pubkey = hexToBytes2(xonlyHex);
+  const leaf = {
+    type: "tr",
+    script: Script.encode(OutInscription.decode({ type: "tr_inscription", pubkey, data: toBytes3(data) }))
+  };
+  return p2tr(void 0, leaf, NETWORK, false, [OutInscription]);
+}
+function commitAddress(xonlyHex, data) {
+  return commitPayment(xonlyHex, data).address;
+}
+function buildReveal({ utxo, owner, data, destination, feeRate, auxRand } = {}) {
+  const value = BigInt(utxo.value);
+  if (value <= 0n) throw new Error("UTXO value must be positive");
+  const rate = Number(feeRate);
+  if (!Number.isFinite(rate) || rate <= 0) throw new Error("fee rate must be a positive number");
+  assertMainnetAddress(destination);
+  const payment = commitPayment(owner.xonlyHex, data);
+  const build = (outAmount) => {
+    const tx2 = new Transaction({ customScripts: [OutInscription] });
+    tx2.addInput({
+      ...payment,
+      txid: utxo.txid,
+      index: utxo.vout,
+      witnessUtxo: { script: payment.script, amount: value }
+    });
+    tx2.addOutputAddress(destination, outAmount, NETWORK);
+    tx2.sign(owner.privateKey, void 0, auxRand);
+    tx2.finalize();
+    return tx2;
+  };
+  const vsize = build(value).vsize;
+  const fee = BigInt(Math.ceil(vsize * rate));
+  const outputAmount = value - fee;
+  if (fee >= value) throw new Error(`fee ${fee} >= UTXO value ${value}`);
+  if (outputAmount < DUST_SATS) {
+    throw new Error(`output ${outputAmount} sat is below dust ${DUST_SATS} after fee ${fee}`);
+  }
+  const tx = build(outputAmount);
+  return { txHex: tx.hex, txid: tx.id, fee: tx.fee, vsize: tx.vsize, value, outputAmount };
+}
+function estimateReveal({ owner, data, feeRate }) {
+  const r = buildReveal({
+    utxo: { txid: "00".repeat(32), vout: 0, value: 100000000n },
+    owner,
+    data,
+    destination: commitAddress(owner.xonlyHex, data),
+    feeRate,
+    auxRand: new Uint8Array(32)
+  });
+  return { vsize: r.vsize, fee: BigInt(Math.ceil(r.vsize * Number(feeRate))) };
+}
+
 // src/mempool.js
 var BASE = "https://mempool.space/api";
 async function getJson(path) {
@@ -11235,6 +11332,9 @@ function render(account, wallet) {
   $("connect").textContent = "Reconnect / re-derive";
   $("wallet").classList.remove("hidden");
   renderAddresses();
+  $("inscriptions").classList.remove("hidden");
+  populateInscribeIndex();
+  renderInscriptions();
 }
 async function signAgain() {
   if (!state) return;
@@ -11357,8 +11457,8 @@ function renderUtxos() {
     list.appendChild(row);
   });
 }
-function feeRateOptions() {
-  const sel = $("feeRate");
+function feeRateOptions(selId = "feeRate") {
+  const sel = $(selId);
   sel.innerHTML = "";
   const presets = feeRates ? [
     ["fastestFee", "Fast (~10 min)"],
@@ -11448,10 +11548,188 @@ function resetWallet() {
   utxos = [];
   selectedUtxo = null;
   builtSpend = null;
+  selectedReveal = null;
+  builtReveal = null;
   $("result").classList.add("hidden");
   $("signAgain").classList.add("hidden");
   $("wallet").classList.add("hidden");
   $("spendPanel").classList.add("hidden");
+  $("inscriptions").classList.add("hidden");
+  $("revealPanel").classList.add("hidden");
+}
+var selectedReveal = null;
+var builtReveal = null;
+var INSCR_KEY = () => `sig-taproot:inscriptions:${state?.account ?? "none"}`;
+var loadInscriptions = () => {
+  try {
+    return JSON.parse(localStorage.getItem(INSCR_KEY())) || [];
+  } catch {
+    return [];
+  }
+};
+var saveInscriptions = (list) => localStorage.setItem(INSCR_KEY(), JSON.stringify(list));
+var ownerAt = (index) => {
+  const a = taprootAddressAt(state.mnemonic, index);
+  return { xonlyHex: a.xonlyHex, privateKey: a.privateKey };
+};
+function populateInscribeIndex() {
+  const sel = $("inscribeIndex");
+  sel.innerHTML = "";
+  for (const a of addresses) {
+    const o = document.createElement("option");
+    o.value = String(a.index);
+    o.textContent = `#${a.index}`;
+    sel.appendChild(o);
+  }
+}
+async function createInscription() {
+  try {
+    const data = $("inscribeData").value;
+    if (!data) {
+      setInscribeHint("Enter some data to inscribe.", "error");
+      return;
+    }
+    const ownerIndex = Number($("inscribeIndex").value) || 0;
+    const owner = ownerAt(ownerIndex);
+    const addr = commitAddress(owner.xonlyHex, data);
+    const list = loadInscriptions();
+    list.unshift({ id: `${Date.now()}-${ownerIndex}`, data, ownerIndex, commitAddress: addr });
+    saveInscriptions(list);
+    feeRates = await getFeeRates().catch(() => feeRates);
+    const rate = feeRates?.halfHourFee ?? 5;
+    const est = estimateReveal({ owner, data, feeRate: rate });
+    setInscribeHint(
+      `Saved. Send funds to the commit address below, then Scan. Reveal will cost \u2248 ${fmtSats(est.fee)} at ${rate} sat/vB (${est.vsize} vB) \u2014 fund at least that plus your output.`,
+      "ok"
+    );
+    $("inscribeData").value = "";
+    renderInscriptions();
+  } catch (err) {
+    reportError(err);
+    setInscribeHint(err?.message || String(err), "error");
+  }
+}
+function setInscribeHint(msg, kind = "info") {
+  const el = $("inscribeHint");
+  el.textContent = msg;
+  el.className = `status status--${kind}`;
+}
+function renderInscriptions() {
+  const list = loadInscriptions();
+  const box = $("inscriptionList");
+  box.innerHTML = "";
+  if (!list.length) {
+    box.innerHTML = '<div class="wl-conf">No inscriptions yet.</div>';
+    return;
+  }
+  for (const entry of list) {
+    const wrap2 = document.createElement("div");
+    wrap2.className = "card";
+    wrap2.style.margin = "0.6rem 0";
+    const preview = entry.data.length > 60 ? entry.data.slice(0, 60) + "\u2026" : entry.data;
+    wrap2.innerHTML = `<div class="wl-conf">#${entry.ownerIndex} \xB7 ${entry.data.length} bytes</div><div class="mono" style="background:none;padding:0.2rem 0;white-space:pre-wrap;word-break:break-word">${escapeHtml(preview)}</div><div class="label">Commit address (fund this)</div><code class="block">${entry.commitAddress}</code>`;
+    const actions = document.createElement("div");
+    actions.className = "inline-actions";
+    const copy = mkButton("Copy address", "ghost", () => copyText(entry.commitAddress, copy));
+    const scan = mkButton("Scan", "", () => scanInscription(entry, utxoBox));
+    const del = mkButton("Delete", "ghost", () => {
+      saveInscriptions(loadInscriptions().filter((e) => e.id !== entry.id));
+      renderInscriptions();
+    });
+    actions.append(copy, scan, del);
+    const utxoBox = document.createElement("div");
+    wrap2.append(actions, utxoBox);
+    box.appendChild(wrap2);
+  }
+}
+async function scanInscription(entry, utxoBox) {
+  try {
+    utxoBox.textContent = "Scanning\u2026";
+    feeRates = await getFeeRates().catch(() => feeRates);
+    const found = await getUtxos(entry.commitAddress);
+    utxoBox.innerHTML = "";
+    if (!found.length) {
+      utxoBox.innerHTML = '<div class="wl-conf">No UTXOs yet \u2014 fund the commit address and Scan again.</div>';
+      return;
+    }
+    for (const u of found) {
+      const row = document.createElement("div");
+      row.className = "wl-row";
+      row.innerHTML = `<code class="wl-addr">${short(u.txid)}:${u.vout}</code><span>${fmtBtc(u.value)}</span><span class="wl-conf">${u.status?.confirmed ? "confirmed" : "pending"}</span>`;
+      row.appendChild(mkButton("Reveal", "", () => openReveal(entry, { txid: u.txid, vout: u.vout, value: BigInt(u.value) })));
+      utxoBox.appendChild(row);
+    }
+  } catch (err) {
+    utxoBox.textContent = err?.message || String(err);
+  }
+}
+function openReveal(entry, utxo) {
+  selectedReveal = { entry, utxo };
+  builtReveal = null;
+  feeRateOptions("revealFeeRate");
+  $("revealInfo").textContent = `#${entry.ownerIndex} \xB7 ${short(utxo.txid)}:${utxo.vout} \xB7 ${fmtBtc(utxo.value)} \xB7 ${entry.data.length} bytes`;
+  $("revealDest").value = "";
+  $("revealPreview").textContent = "";
+  $("revealPreview").className = "";
+  $("confirmReveal").classList.add("hidden");
+  $("revealResult").textContent = "";
+  $("revealResult").className = "";
+  $("revealPanel").classList.remove("hidden");
+  $("revealPanel").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+function previewReveal() {
+  try {
+    if (!selectedReveal) return;
+    const destination = $("revealDest").value.trim();
+    const feeRate = Number($("revealFeeRate").value);
+    const { entry, utxo } = selectedReveal;
+    builtReveal = buildReveal({ utxo, owner: ownerAt(entry.ownerIndex), data: entry.data, destination, feeRate });
+    $("revealPreview").innerHTML = `Reveal ${entry.data.length} bytes; send <b>${fmtBtc(builtReveal.outputAmount)}</b> \u2192 <code>${destination}</code><br>from ${fmtBtc(utxo.value)}, fee <b>${fmtSats(builtReveal.fee)}</b> @ ${feeRate} sat/vB (${builtReveal.vsize} vB)`;
+    $("revealPreview").className = "ok";
+    $("confirmReveal").classList.remove("hidden");
+  } catch (err) {
+    builtReveal = null;
+    $("confirmReveal").classList.add("hidden");
+    $("revealPreview").textContent = err?.message || String(err);
+    $("revealPreview").className = "error";
+  }
+}
+async function confirmReveal() {
+  if (!builtReveal || !selectedReveal) return;
+  const destination = $("revealDest").value.trim();
+  const ok = window.confirm(
+    `BROADCAST a REAL mainnet inscription (reveal)?
+
+Reveal ${selectedReveal.entry.data.length} bytes and send ${fmtBtc(builtReveal.outputAmount)} to:
+${destination}
+
+Fee: ${fmtSats(builtReveal.fee)}. This is irreversible.`
+  );
+  if (!ok) return;
+  try {
+    $("confirmReveal").disabled = true;
+    $("revealResult").textContent = "Broadcasting\u2026";
+    $("revealResult").className = "status status--info";
+    const txid = await broadcast(builtReveal.txHex);
+    $("revealResult").innerHTML = `\u2713 Inscribed. txid: <a href="${txUrl(txid)}" target="_blank" rel="noopener">${txid}</a>`;
+    $("revealResult").className = "ok";
+    $("confirmReveal").classList.add("hidden");
+  } catch (err) {
+    $("revealResult").textContent = err?.message || String(err);
+    $("revealResult").className = "error";
+  } finally {
+    $("confirmReveal").disabled = false;
+  }
+}
+function mkButton(text, cls, onClick) {
+  const b = document.createElement("button");
+  if (cls) b.className = cls;
+  b.textContent = text;
+  b.addEventListener("click", onClick);
+  return b;
+}
+function escapeHtml(s) {
+  return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 }
 $("connect").addEventListener("click", connectAndDerive);
 $("signAgain").addEventListener("click", signAgain);
@@ -11462,6 +11740,9 @@ $("refreshAddresses").addEventListener("click", renderAddresses);
 $("scanUtxos").addEventListener("click", scanUtxos);
 $("previewSpend").addEventListener("click", previewSpend);
 $("confirmSpend").addEventListener("click", confirmSpend);
+$("createInscription").addEventListener("click", createInscription);
+$("previewReveal").addEventListener("click", previewReveal);
+$("confirmReveal").addEventListener("click", confirmReveal);
 globalThis.ethereum?.on?.("accountsChanged", () => {
   resetWallet();
   setStatus("Account changed \u2014 reconnect to derive.", "info");
