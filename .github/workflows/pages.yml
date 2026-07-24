@@ -36,6 +36,7 @@ jobs:
           mkdir -p _site/dist
           cp index.html _site/
           cp dist/app.bundle.js _site/dist/
+          cp favicon.ico favicon-32.png favicon-16.png apple-touch-icon.png _site/
           touch _site/.nojekyll   # serve files as-is, no Jekyll processing
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
