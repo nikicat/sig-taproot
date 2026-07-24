@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: unit (derivation vector)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+
+  e2e-mock:
+    name: e2e (injected real-key provider) — gating
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:e2e
+
+  e2e-ambire:
+    name: e2e (real Ambire extension) — non-gating
+    runs-on: ubuntu-latest
+    # Real-wallet integration guard. Allowed to fail: it depends on Xvfb, a 42 MB
+    # extension download, and Ambire's live phishing service, so its flakiness must
+    # never block a PR. Watch it, don't gate on it.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: sudo apt-get update && sudo apt-get install -y xvfb
+      - name: Download pinned Ambire build
+        run: bash tests/e2e/setup-ambire.sh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Run Ambire e2e under Xvfb
+        run: xvfb-run -a -s "-screen 0 1600x1000x24" pnpm test:e2e:ambire

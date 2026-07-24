@@ -69,13 +69,28 @@ contract. The 65-byte shape check is the reliable signal.
 
 ## Test
 
+Three tiers, fastest first:
+
 ```sh
-pnpm test          # node --test: pinned derivation vector + determinism/salt/validation checks
+pnpm test              # unit: pinned derivation vector + determinism/salt/validation (node --test)
+pnpm test:e2e          # e2e (headless): real page + an injected real-key EIP-1193 provider
+bash tests/e2e/setup-ambire.sh          # once: download the pinned Ambire build (needs gh + unzip)
+xvfb-run -a -s "-screen 0 1600x1000x24" \
+  pnpm test:e2e:ambire # e2e: real page + the REAL Ambire extension (needs a display)
 ```
 
-`src/derive.js` is a pure, DOM-free pipeline imported by both the browser bundle and the test,
-so the derivation is machine-verifiable without a wallet. The pinned vector locks it against
-dependency drift.
+- **Unit** — `src/derive.js` is a pure, DOM-free pipeline imported by both the browser bundle
+  and the test, so the derivation is machine-verifiable without a wallet. The pinned vector
+  locks it against dependency drift.
+- **`test:e2e` (Tier 1, gates CI)** — Playwright drives the built page in headless Chromium
+  against an injected provider that signs with a real key (viem), producing a genuine 65-byte
+  signature. Deterministic; pins the derived `bc1p…` and cross-checks it against a node
+  derivation of the same signature.
+- **`test:e2e:ambire` (Tier 2, non-gating in CI)** — the real Ambire extension via a small
+  harness (`tests/e2e/ambire-harness.ts`, copied/trimmed from `../browser-web3-signer`). Boots
+  a baked EOA fixture, approves the connect + sign popups, and asserts the one-sign-then-verify
+  flow reproduces the same address. Skips unless a display and the extension build are present.
+  See `.github/workflows/ci.yml` for how CI runs all three.
 
 ## Verify end-to-end
 

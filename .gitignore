@@ -1,1 +1,7 @@
 node_modules/
+
+# e2e: downloaded Ambire extension build (fetched by tests/e2e/setup-ambire.sh)
+tests/e2e/ambire-build/
+# playwright output
+test-results/
+playwright-report/
