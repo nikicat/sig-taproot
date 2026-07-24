@@ -6,7 +6,7 @@
 //
 // EVM signature (deterministic ECDSA) --HKDF--> 32 bytes entropy
 //   --BIP-39--> 24-word mnemonic --seed--> BIP-32 root
-//   --BIP-86 (m/86'/0'/0'/0/0)--> x-only pubkey --> P2TR bech32m (bc1p...)
+//   --BIP-86 (m/86'/0'/0'/0/index)--> x-only pubkey --> P2TR bech32m (bc1p...)
 
 import { hkdf } from '@noble/hashes/hkdf.js';
 import { sha256 } from '@noble/hashes/sha2.js';
@@ -21,24 +21,23 @@ import * as btc from '@scure/btc-signer';
 // address, so it is versioned and must never drift.
 export const CONTEXT = 'sig-taproot/wallet-seed:v1';
 
-// BIP-86 (single-sig P2TR), mainnet account 0, external chain, index 0.
-export const PATH = "m/86'/0'/0'/0/0";
+// BIP-86 (single-sig P2TR), mainnet account 0, external chain. The receive
+// address index varies (a per-UTXO wallet with an indexed address list).
+export const pathAt = (index) => `m/86'/0'/0'/0/${index}`;
+
+// Back-compat: the pinned test vector and the "first address" default use index 0.
+export const PATH = pathAt(0);
 
 /**
- * Derive a taproot wallet from a deterministic EVM wallet signature.
+ * Turn a deterministic EVM wallet signature into the wallet's BIP-39 mnemonic.
+ * This is the HKDF -> BIP-39 half; addresses come from `taprootAddressAt`.
  *
  * @param {string} signatureHex - `0x`-prefixed 65-byte signature (r||s||v) from
- *   `eth_signTypedData_v4`. Passed through HKDF whole (scheme-agnostic) rather
- *   than slicing out `r`.
- * @param {string} address - `0x`-prefixed 20-byte EOA address of the signer,
- *   used as the HKDF salt so the same signature under a different account yields
- *   a different wallet.
- * @returns {{ mnemonic: string, path: string, xonlyHex: string,
- *   btcAddress: string, privateKey: Uint8Array }}
- *   `privateKey` is the BIP-86 child key, retained so a later stage can sign a
- *   real taproot spend in-page (deferred stage 5).
+ *   `eth_signTypedData_v4`. Passed through HKDF whole (scheme-agnostic).
+ * @param {string} address - `0x`-prefixed 20-byte EOA address, the HKDF salt.
+ * @returns {string} 24-word English mnemonic.
  */
-export function deriveTaproot(signatureHex, address) {
+export function deriveMnemonic(signatureHex, address) {
   const sig = normalizeHex(signatureHex);
   const addr = normalizeHex(address);
   if (sig.length !== 65 * 2) {
@@ -53,21 +52,42 @@ export function deriveTaproot(signatureHex, address) {
   const info = utf8ToBytes(CONTEXT);
 
   const entropy = hkdf(sha256, ikm, salt, info, 32); // 256-bit -> 24 words
-  const mnemonic = entropyToMnemonic(entropy, wordlist);
+  return entropyToMnemonic(entropy, wordlist);
+}
+
+/**
+ * Derive the taproot receive address (and signing key) at a BIP-86 index.
+ *
+ * @param {string} mnemonic - from `deriveMnemonic`.
+ * @param {number} index - non-negative integer address index.
+ * @returns {{ path: string, xonlyHex: string, btcAddress: string, privateKey: Uint8Array }}
+ *   `privateKey` is the child key, held in-page to sign a real taproot spend.
+ */
+export function taprootAddressAt(mnemonic, index) {
+  if (!Number.isInteger(index) || index < 0) {
+    throw new Error(`address index must be a non-negative integer, got ${index}`);
+  }
+  const path = pathAt(index);
   const seed = mnemonicToSeedSync(mnemonic);
-  const child = HDKey.fromMasterSeed(seed).derive(PATH);
+  const child = HDKey.fromMasterSeed(seed).derive(path);
   if (!child.privateKey) throw new Error('BIP-32 derivation produced no private key');
 
   const xonly = btc.utils.pubSchnorr(child.privateKey); // 32-byte x-only pubkey
-  const { address: btcAddress } = btc.p2tr(xonly); // mainnet bech32m, bc1p...
+  const { address: btcAddress } = btc.p2tr(xonly, undefined, btc.NETWORK); // bc1p...
 
-  return {
-    mnemonic,
-    path: PATH,
-    xonlyHex: bytesToHex(xonly),
-    btcAddress,
-    privateKey: child.privateKey,
-  };
+  return { path, xonlyHex: bytesToHex(xonly), btcAddress, privateKey: child.privateKey };
+}
+
+/**
+ * Convenience: derive the first (index 0) taproot wallet in one call. Returns
+ * the mnemonic alongside the index-0 address. Kept for the pinned test vector.
+ *
+ * @returns {{ mnemonic: string, path: string, xonlyHex: string,
+ *   btcAddress: string, privateKey: Uint8Array }}
+ */
+export function deriveTaproot(signatureHex, address) {
+  const mnemonic = deriveMnemonic(signatureHex, address);
+  return { mnemonic, ...taprootAddressAt(mnemonic, 0) };
 }
 
 // Strip an optional `0x` prefix and lowercase; leaves the caller's byte content

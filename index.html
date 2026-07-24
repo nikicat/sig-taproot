@@ -95,6 +95,22 @@
       }
       .warn strong { color: var(--fg); }
       a { color: var(--accent); }
+      .subhead { font-weight: 600; margin: 1.1rem 0 0.4rem; }
+      .field { margin: 0.6rem 0; }
+      .label { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin-bottom: 0.2rem; }
+      input[type="text"], input[type="number"], select {
+        font: inherit; color: var(--fg); background: var(--card);
+        border: 1px solid var(--border); border-radius: 8px; padding: 0.5rem 0.6rem;
+      }
+      input[type="text"] { width: 100%; }
+      .wl-row { display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem 0; border-bottom: 1px solid var(--border); font-size: 0.88rem; }
+      .wl-row:last-child { border-bottom: 0; }
+      .wl-idx { color: var(--muted); min-width: 2.4rem; }
+      .wl-addr { flex: 1; background: var(--code-bg); border-radius: 5px; padding: 0.15rem 0.4rem; overflow-x: auto; }
+      .wl-conf { color: var(--muted); font-size: 0.8rem; }
+      .wl-row button { padding: 0.3rem 0.7rem; }
+      .banner-danger { border-left: 3px solid var(--err); padding: 0.6rem 0.9rem; font-size: 0.9rem; margin-bottom: 1rem; }
+      .banner-danger strong { color: var(--err); }
     </style>
   </head>
   <body>
@@ -142,6 +158,46 @@
           </div>
         </div>
         <div id="determinism" class="mono" style="background: none; padding: 0"></div>
+      </div>
+
+      <div id="wallet" class="card hidden">
+        <div class="banner-danger">
+          <strong>Mainnet — real funds.</strong> Everything below is on Bitcoin mainnet;
+          broadcast transactions are real and irreversible. Test with a tiny amount first.
+        </div>
+
+        <div class="subhead">Receive addresses</div>
+        <div class="field">
+          Show
+          <input id="addrCount" type="number" min="1" max="50" value="5" style="width: 4rem" />
+          addresses
+          <button id="refreshAddresses" class="ghost">Refresh</button>
+        </div>
+        <div id="addressList"></div>
+
+        <div class="subhead">UTXOs</div>
+        <button id="scanUtxos">Scan for UTXOs</button>
+        <div id="utxoStatus" class="status status--info"></div>
+        <div id="utxoList"></div>
+
+        <div id="spendPanel" class="hidden">
+          <div class="subhead">Spend UTXO (full, no change)</div>
+          <div class="field">Spending: <code id="spendUtxo"></code></div>
+          <div class="field">
+            <div class="label">Destination address (mainnet)</div>
+            <input id="destAddress" type="text" placeholder="bc1… / 3… / 1…" autocomplete="off" spellcheck="false" />
+          </div>
+          <div class="field">
+            <div class="label">Fee rate</div>
+            <select id="feeRate"></select>
+          </div>
+          <div class="inline-actions">
+            <button id="previewSpend">Preview</button>
+            <button id="confirmSpend" class="hidden">Confirm &amp; broadcast</button>
+          </div>
+          <div id="spendPreview" class="mono" style="background: none; padding: 0.4rem 0"></div>
+          <div id="spendResult" class="mono" style="background: none; padding: 0.4rem 0"></div>
+        </div>
       </div>
 
       <div class="card warn">

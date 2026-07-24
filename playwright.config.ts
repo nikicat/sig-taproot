@@ -21,7 +21,8 @@ export default defineConfig({
     baseURL: 'http://127.0.0.1:8000',
   },
   projects: [
-    { name: 'mock', testMatch: /injected-wallet\.spec\.ts/, use: { headless: true } },
+    // mock = all headless specs except the real-Ambire one.
+    { name: 'mock', testIgnore: /ambire\.spec\.ts/, use: { headless: true } },
     { name: 'ambire', testMatch: /ambire\.spec\.ts/ },
   ],
 });
