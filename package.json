@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "Bitcoin taproot wallet deterministically derived from an EVM wallet signature (client-side demo)",
+  "packageManager": "pnpm@10.33.0",
   "scripts": {
     "bundle": "esbuild src/app.js --bundle --format=esm --outfile=dist/app.bundle.js",
     "test": "node --test",
